@@ -7,6 +7,9 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- NLP Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/natural@6.12.0/dist/natural.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/wink-nlp-utils@1.0.0/src/wink-nlp-utils.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
         
@@ -259,7 +262,7 @@
                         <div class="w-8 h-8 bg-violet-50 rounded-lg flex items-center justify-center"><i class="fas fa-file-arrow-up text-violet-500 text-sm"></i></div>
                         <div>
                             <h3 class="font-bold text-slate-800">Upload Reviews</h3>
-                            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">CSV or TXT — replaces URL scan</p>
+                            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">CSV or TXT · NLP-powered · No API key needed</p>
                         </div>
                     </div>
                     <label id="upload-label" class="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-200 rounded-2xl p-5 cursor-pointer hover:border-violet-400 hover:bg-violet-50 transition-all">
@@ -461,25 +464,25 @@
             const reader = new FileReader();
             reader.onload = function(e) {
                 const text = e.target.result;
-                const { trustBase, fakeBase, promoFlag, majorIssue, reviewCount, realMonthlyData } = analyzeReviewText(text);
+                const { trustBase, fakeBase, promoFlag, majorIssue, reviewCount,
+                        realMonthlyData, aspectScores, topComplaint, sentPos, sentNeg, sentNeu } = analyzeReviewText(text);
                 const fileHash = text.split('').slice(0, 200).reduce((a, c) => a + c.charCodeAt(0), 0);
 
-                // Update vendor identity bar
                 document.getElementById('vendor-hub-title').innerText = file.name.replace(/\.[^.]+$/, '');
-                document.getElementById('vendor-hub-domain').innerText = reviewCount + ' reviews loaded from file';
-                document.getElementById('vendor-scan-notice').innerText = '✓ File analyzed';
+                document.getElementById('vendor-hub-domain').innerText = reviewCount + ' reviews analysed via NLP';
+                document.getElementById('vendor-scan-notice').innerText = '✓ NLP analysis complete';
                 document.getElementById('vendor-scan-notice').className = 'text-[10px] text-violet-600 bg-violet-50 border border-violet-200 rounded-full px-2 py-0.5 font-bold';
-
-                // Update customer hub title
                 document.getElementById('productTitle').innerText = file.name;
 
                 uploadIcon.className = 'fas fa-circle-check text-2xl text-violet-500';
-                uploadText.innerText = reviewCount + ' reviews analyzed';
-                statusEl.innerText = '✓ Cards updated from file data';
+                uploadText.innerText = reviewCount + ' reviews analysed';
+                statusEl.innerText = '✓ NLP pipeline complete — VADER · TF-IDF · Aspect analysis';
                 statusEl.className = 'mt-3 text-xs font-bold text-center text-violet-600';
                 statusEl.classList.remove('hidden');
 
-                applyAnalysis(trustBase, fakeBase, promoFlag, majorIssue, fileHash, realMonthlyData, reviewCount);
+                applyAnalysis(trustBase, fakeBase, promoFlag, majorIssue, fileHash,
+                              realMonthlyData, reviewCount, aspectScores, topComplaint,
+                              { pos: sentPos, neg: sentNeg, neu: sentNeu });
             };
             reader.onerror = function() {
                 uploadIcon.className = 'fas fa-circle-xmark text-2xl text-red-400';
@@ -488,73 +491,249 @@
             reader.readAsText(file);
         }
 
-        function analyzeReviewText(text) {
-            const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 5);
-            const reviewCount = Math.max(1, lines.length);
-            const body = text.toLowerCase();
+        // ── NLP ENGINE ─────────────────────────────────────────────────────────
 
-            const fakeSignals = (body.match(/\b(fake|bot|spam|paid|incentiv|promo|discount|free|compensat|incentive|sponsored|gifted|received.*review|review.*exchange|bias|astroturf|identical|copy.paste|template)\b/g) || []).length;
-            const negSignals  = (body.match(/\b(broken|terrible|awful|horrible|worst|defective|scam|fraud|refund|return|waste|disappoint|useless|poor|bad|cheap|didn.t work|not worth|misleading|false)\b/g) || []).length;
-            const posSignals  = (body.match(/\b(great|excellent|amazing|perfect|love|fantastic|recommend|awesome|best|quality|happy|satisfied|genuine|authentic|honest|verified|real)\b/g) || []).length;
-            const stars       = [...body.matchAll(/\b([1-5])\s*(?:star|\/5|\s*★)/g)].map(m => parseInt(m[1]));
-            const avgStar     = stars.length ? stars.reduce((a, b) => a + b, 0) / stars.length : null;
+        // VADER-style sentiment lexicon (condensed, review-optimised)
+        const VADER_LEXICON = {
+            // Strong positive
+            excellent:4,outstanding:4,phenomenal:4,superb:4,flawless:4,perfect:4,brilliant:4,
+            amazing:3.5,fantastic:3.5,incredible:3.5,wonderful:3.5,exceptional:3.5,
+            great:3,love:3,awesome:3,terrific:3,impressive:3,delighted:3,thrilled:3,
+            good:2,nice:2,happy:2,pleased:2,satisfied:2,recommend:2,solid:2,reliable:2,
+            decent:1.5,fine:1,okay:1,adequate:1,acceptable:1,
+            // Strong negative
+            terrible:-4,horrible:-4,atrocious:-4,dreadful:-4,appalling:-4,
+            awful:-3.5,disgusting:-3.5,abysmal:-3.5,pathetic:-3.5,
+            worst:-3,broken:-3,defective:-3,useless:-3,scam:-3,fraud:-3,fake:-3,
+            bad:-2.5,poor:-2.5,disappointing:-2.5,misleading:-2.5,cheap:-2,
+            waste:-2,refund:-2,return:-2,damaged:-2,faulty:-2,
+            mediocre:-1.5,average:-0.5,okay:-0,
+            // Intensifiers/negations handled separately
+        };
+        const INTENSIFIERS   = { very:1.3, extremely:1.5, incredibly:1.4, absolutely:1.4, totally:1.3, completely:1.3, really:1.2, quite:1.1, somewhat:0.8, barely:0.6, hardly:0.5 };
+        const NEGATIONS      = new Set(['not','no','never','neither','nobody','nothing','neither','nor','cannot',"can't","won't","don't","doesn't","didn't","isn't","wasn't"]);
 
-            const totalSignals = fakeSignals + negSignals + posSignals + 1;
-            let fakePct = Math.round((fakeSignals / totalSignals) * 80) + Math.min(20, Math.round(negSignals / reviewCount * 30));
-            fakePct = Math.max(3, Math.min(75, fakePct));
+        // Fake review signals — weighted
+        const FAKE_SIGNALS = {
+            gifted:3, compensated:3, incentivized:3, sponsored:3, 'in exchange':3,
+            'received for review':3, 'received free':3, 'provided for':3,
+            paid:2, 'paid review':3, 'paid ratings':3, astroturf:3,
+            bot:2, 'bot activity':3, 'copy paste':2, template:2,
+            'identical review':3, 'same review':3,
+            promo:1, promotional:1.5, discount:1, 'free product':2,
+        };
 
-            let trustBase;
-            if (avgStar !== null) {
-                trustBase = Math.round(((avgStar - 1) / 4) * 80 + 15);
-                fakePct   = Math.max(3, Math.round((5 - avgStar) / 4 * 60));
-            } else {
-                trustBase = Math.max(10, Math.min(95, 100 - fakePct - Math.round(negSignals / reviewCount * 20)));
+        // Aspect keywords — maps words to aspect categories
+        const ASPECT_KEYWORDS = {
+            quality:   ['quality','material','build','durable','sturdy','flimsy','cheap','solid','well made','poorly made','construction','craft','finish'],
+            price:     ['price','value','worth','expensive','cheap','affordable','overpriced','cost','money','budget','deal','pricey'],
+            delivery:  ['delivery','shipping','arrived','transit','courier','fast','slow','delayed','dispatch','package arrived','on time','late'],
+            packaging: ['packaging','box','packed','wrapped','protective','crushed','damaged packaging','bubble wrap','presentation','unboxing'],
+            service:   ['customer service','support','response','replied','helpful','rude','unhelpful','contact','refund','return','resolved','ignored'],
+        };
+
+        function vaderScore(text) {
+            // Returns compound score -1 to +1
+            const tokens = text.toLowerCase().replace(/[^a-z\s']/g, ' ').split(/\s+/);
+            let sum = 0, count = 0;
+            for (let i = 0; i < tokens.length; i++) {
+                const word = tokens[i].replace(/[^a-z]/g,'');
+                if (!word || !(word in VADER_LEXICON)) continue;
+                let score = VADER_LEXICON[word];
+                // Check intensifier before word
+                if (i > 0 && tokens[i-1] in INTENSIFIERS) score *= INTENSIFIERS[tokens[i-1]];
+                // Check negation window (-3 words)
+                const window = tokens.slice(Math.max(0, i-3), i);
+                if (window.some(w => NEGATIONS.has(w.replace(/[^a-z]/g,'')))) score *= -0.74;
+                // ALL CAPS emphasis
+                if (text.split(/\s+/)[i] === text.split(/\s+/)[i]?.toUpperCase() && word.length > 2) score *= 1.25;
+                sum += score; count++;
             }
+            if (count === 0) return 0;
+            // Normalise to -1..+1
+            return Math.max(-1, Math.min(1, sum / (count * 4)));
+        }
 
-            const promoFlag  = fakeSignals > 3 || body.includes('incentiv') || body.includes('gifted');
-            const majorIssue = fakePct >= 40 ? 'High fake/promotional language detected in reviews'
-                             : fakePct >= 20 ? 'Some suspicious phrasing patterns found'
-                             : negSignals > posSignals ? 'Predominantly negative sentiment in reviews'
-                             : 'No major issues detected in review text';
+        function classifyFake(reviewText) {
+            // Naive Bayes-style fake score 0-1 using weighted signal matching
+            const lower = reviewText.toLowerCase();
+            let fakeScore = 0, maxPossible = 0;
+            for (const [signal, weight] of Object.entries(FAKE_SIGNALS)) {
+                maxPossible += weight;
+                if (lower.includes(signal)) fakeScore += weight;
+            }
+            // Structural signals: very short reviews, excessive exclamation marks, repeated words
+            const words = lower.split(/\s+/);
+            const uniqueRatio = new Set(words).size / Math.max(1, words.length);
+            if (words.length < 6)  fakeScore += 1.5;   // suspiciously short
+            if ((reviewText.match(/!/g)||[]).length > 3) fakeScore += 1; // excessive emphasis
+            if (uniqueRatio < 0.5) fakeScore += 2;      // high word repetition
+            maxPossible += 4.5;
+            return Math.min(1, fakeScore / maxPossible);
+        }
 
-            // Parse dates for month-over-month trend
-            // Supports YYYY-MM-DD, MM/DD/YYYY, DD-MM-YYYY formats
+        function aspectSentiment(reviews) {
+            // For each aspect, collect sentiment scores from sentences mentioning aspect keywords
+            const scores = { quality:[], price:[], delivery:[], packaging:[], service:[] };
+            reviews.forEach(r => {
+                // Split into sentences
+                const sentences = r.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 3);
+                sentences.forEach(sent => {
+                    const sl = sent.toLowerCase();
+                    for (const [aspect, keywords] of Object.entries(ASPECT_KEYWORDS)) {
+                        if (keywords.some(k => sl.includes(k))) {
+                            scores[aspect].push(vaderScore(sent));
+                        }
+                    }
+                });
+            });
+            // Convert average VADER score → 0–100 aspect score
+            const result = {};
+            for (const [aspect, arr] of Object.entries(scores)) {
+                if (arr.length === 0) {
+                    result[aspect] = null; // no mentions
+                } else {
+                    const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+                    result[aspect] = Math.round(((avg + 1) / 2) * 100); // -1..+1 → 0..100
+                }
+            }
+            return result;
+        }
+
+        function tfidfTopComplaints(reviews, topN) {
+            // TF-IDF on negative reviews to find most distinctive complaint terms
+            const STOPWORDS = new Set(['the','a','an','and','or','but','in','on','at','to','for','of','with','is','was','it','this','that','i','my','me','we','our','have','had','be','been','so','as','by','from','are','were','has','he','she','they','their','its','not','no','can','will','would','could','should','did','do','got','get','just','very','really','quite','also','more','than','then','after','before','about','been','has','have','what','which','when','how','all','any','each','both','few','most','other','into','through','during','up','down','out','off','over','under','again','here','there','who','these','those','him','her','they']);
+            const negReviews = reviews.filter((r, i) => vaderScore(r) < -0.1);
+            if (negReviews.length === 0) return 'No Issues Found';
+            // TF: term frequency across all negative reviews combined
+            const tf = {};
+            negReviews.forEach(r => {
+                const tokens = r.toLowerCase().replace(/[^a-z\s]/g,' ').split(/\s+/).filter(w => w.length > 3 && !STOPWORDS.has(w));
+                const counts = {};
+                tokens.forEach(t => counts[t] = (counts[t]||0)+1);
+                Object.entries(counts).forEach(([t, c]) => tf[t] = (tf[t]||0) + c/tokens.length);
+            });
+            // IDF: penalise terms that appear in positive reviews too
+            const posReviews = reviews.filter(r => vaderScore(r) >= 0.1);
+            const idf = {};
+            Object.keys(tf).forEach(term => {
+                const posCount = posReviews.filter(r => r.toLowerCase().includes(term)).length + 1;
+                idf[term] = Math.log((reviews.length + 1) / posCount);
+            });
+            // TFIDF score
+            const tfidf = Object.entries(tf).map(([term, tfScore]) => ({
+                term, score: tfScore * (idf[term]||1)
+            })).sort((a, b) => b.score - a.score);
+            // Return top term, capitalised
+            const top = tfidf.slice(0, topN || 1)[0];
+            return top ? top.term.charAt(0).toUpperCase() + top.term.slice(1) : 'No Issues Found';
+        }
+
+        function parseReviews(text) {
+            // Extract review text column from CSV or treat each line as a review
+            const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 5);
+            if (!lines.length) return [];
+            // Detect CSV: check if first line has commas (header row)
+            const isCSV = lines[0].includes(',');
+            if (isCSV) {
+                const header = lines[0].toLowerCase().split(',');
+                // Find the column most likely to be review text
+                const textCol = header.findIndex(h => /review|text|comment|body|content|feedback/i.test(h));
+                const colIdx  = textCol >= 0 ? textCol : header.length - 1; // fallback: last column
+                return lines.slice(1).map(line => {
+                    // Handle quoted CSV fields
+                    const cols = line.match(/(".*?"|[^,]+)(?=,|$)/g) || line.split(',');
+                    const cell = (cols[colIdx] || '').replace(/^"|"$/g, '').trim();
+                    return cell;
+                }).filter(r => r.length > 5);
+            }
+            return lines; // plain TXT: one review per line
+        }
+
+        function parseDates(text) {
+            const lines = text.split(/\r?\n/);
             const monthMap = {};
             const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
             lines.forEach(line => {
-                const dateMatch = line.match(/\b(\d{4}[-\/]\d{1,2}[-\/]\d{1,2}|\d{1,2}[-\/]\d{1,2}[-\/]\d{4})\b/);
-                if (dateMatch) {
-                    const raw = dateMatch[1];
+                const m = line.match(/\b(\d{4}[-\/]\d{1,2}[-\/]\d{1,2}|\d{1,2}[-\/]\d{1,2}[-\/]\d{4})\b/);
+                if (m) {
+                    const raw = m[1];
                     let year, month;
-                    if (/^\d{4}/.test(raw)) {
-                        // YYYY-MM-DD
-                        const parts = raw.split(/[-\/]/);
-                        year = parts[0]; month = parseInt(parts[1]) - 1;
-                    } else {
-                        // MM/DD/YYYY or DD-MM-YYYY
-                        const parts = raw.split(/[-\/]/);
-                        year = parts[2]; month = parseInt(parts[0]) - 1;
-                    }
+                    if (/^\d{4}/.test(raw)) { const p = raw.split(/[-\/]/); year=p[0]; month=parseInt(p[1])-1; }
+                    else { const p = raw.split(/[-\/]/); year=p[2]; month=parseInt(p[0])-1; }
                     if (month >= 0 && month <= 11) {
-                        const key = year + '-' + String(month + 1).padStart(2, '0');
-                        monthMap[key] = (monthMap[key] || 0) + 1;
+                        const key = year+'-'+String(month+1).padStart(2,'0');
+                        monthMap[key] = (monthMap[key]||0)+1;
                     }
                 }
             });
-
-            let realMonthlyData = null;
-            const sortedKeys = Object.keys(monthMap).sort();
-            if (sortedKeys.length >= 2) {
-                realMonthlyData = sortedKeys.map(k => {
-                    const [y, m] = k.split('-');
-                    return { month: monthNames[parseInt(m) - 1] + ' ' + y.slice(2), count: monthMap[k] };
-                });
-            }
-
-            return { trustBase, fakeBase: fakePct, promoFlag, majorIssue, reviewCount, realMonthlyData };
+            const sorted = Object.keys(monthMap).sort();
+            if (sorted.length < 2) return null;
+            return sorted.map(k => { const [y,mo]=k.split('-'); return { month: monthNames[parseInt(mo)-1]+' '+y.slice(2), count: monthMap[k] }; });
         }
 
-        function applyAnalysis(trustBase, fakeBase, promoFlag, majorIssue, seed, realMonthlyData, reviewCount) {
+        function analyzeReviewText(text) {
+            const reviews     = parseReviews(text);
+            const reviewCount = Math.max(1, reviews.length);
+
+            // 1. Per-review sentiment via VADER
+            const sentScores  = reviews.map(r => vaderScore(r));
+            const avgSentiment = sentScores.reduce((a,b)=>a+b,0) / reviewCount;
+            const posCount    = sentScores.filter(s => s >= 0.05).length;
+            const negCount    = sentScores.filter(s => s <= -0.05).length;
+            const neuCount    = reviewCount - posCount - negCount;
+
+            // 2. Per-review fake classification via Naive Bayes signals
+            const fakeScores  = reviews.map(r => classifyFake(r));
+            const avgFake     = fakeScores.reduce((a,b)=>a+b,0) / reviewCount;
+            const fakePct     = Math.round(Math.max(2, Math.min(90, avgFake * 100)));
+
+            // 3. Star ratings if present
+            const body        = text.toLowerCase();
+            const stars       = [...body.matchAll(/\b([1-5])\s*(?:star|\/5|\s*★)/g)].map(m => parseInt(m[1]));
+            const avgStar     = stars.length >= 3 ? stars.reduce((a,b)=>a+b,0)/stars.length : null;
+
+            // 4. Trust score: blend sentiment + star rating + fake penalty
+            let trustBase;
+            if (avgStar !== null) {
+                const starTrust = Math.round(((avgStar - 1) / 4) * 80 + 15);
+                const sentTrust = Math.round(((avgSentiment + 1) / 2) * 100);
+                trustBase = Math.round(starTrust * 0.5 + sentTrust * 0.3 + (100 - fakePct) * 0.2);
+            } else {
+                const sentTrust = Math.round(((avgSentiment + 1) / 2) * 100);
+                trustBase = Math.round(sentTrust * 0.6 + (100 - fakePct) * 0.4);
+            }
+            trustBase = Math.max(5, Math.min(97, trustBase));
+
+            // 5. Aspect-based sentiment
+            const aspectScores = aspectSentiment(reviews);
+
+            // 6. TF-IDF top complaint from negative reviews
+            const topComplaint = tfidfTopComplaints(reviews, 1);
+
+            // 7. Promo flag
+            const promoFlag = fakePct >= 25 || reviews.some(r => /gifted|compensated|sponsored|incentivized|in exchange/i.test(r));
+
+            // 8. Major issue
+            const majorIssue = fakePct >= 40 ? 'High proportion of fake/paid reviews detected via NLP'
+                             : fakePct >= 20 ? 'Suspicious review patterns — some paid or templated content'
+                             : negCount > posCount ? 'Majority of reviews carry negative sentiment'
+                             : 'No critical issues — review set appears largely authentic';
+
+            // 9. Sentiment percentages (from actual per-review classification)
+            const sentPos = Math.round((posCount / reviewCount) * 100);
+            const sentNeg = Math.round((negCount / reviewCount) * 100);
+            const sentNeu = 100 - sentPos - sentNeg;
+
+            // 10. Dates for trend
+            const realMonthlyData = parseDates(text);
+
+            return { trustBase, fakeBase: fakePct, promoFlag, majorIssue, reviewCount,
+                     realMonthlyData, aspectScores, topComplaint, sentPos, sentNeg, sentNeu };
+        }
+
+        function applyAnalysis(trustBase, fakeBase, promoFlag, majorIssue, seed,
+                               realMonthlyData, reviewCount, aspectScores, topComplaint, sentiment) {
             // Trust Score
             document.getElementById('stat-trust').innerText = trustBase + '%';
             document.getElementById('stat-trust-sub').innerText = trustBase >= 80 ? '✓ Reviews appear genuine' : trustBase >= 55 ? '⚠ Some concerns detected' : '🚨 High fake activity';
@@ -599,37 +778,70 @@
             const buyScore   = document.getElementById('buy-rec-score');
             const buyIcon    = document.getElementById('buy-rec-icon');
             const confidence = Math.round((trustBase * 0.7) + ((100 - fakeBase) * 0.3));
+            // Build dynamic reason from NLP data when available
+            const nlpAvailable = !!sentiment;
+            const buildReason = (tier) => {
+                if (!nlpAvailable) {
+                    if (tier === 'avoid')   return 'Over 40% of reviews appear fake or bot-generated. Ratings are not trustworthy.';
+                    if (tier === 'caution') return 'Some fake reviews detected. Check 1–3 star reviews carefully before purchasing.';
+                    return 'Reviews are predominantly genuine. Sentiment and authenticity signals are strong.';
+                }
+                const posP  = sentiment.pos, negP = sentiment.neg;
+                const complaint = topComplaint && topComplaint !== 'No Issues Found' ? topComplaint.toLowerCase() : null;
+                if (tier === 'avoid') {
+                    const parts = [`${fakeBase}% of reviews flagged as fake or incentivised by NLP.`];
+                    if (negP > 30) parts.push(`${negP}% of reviewers expressed negative sentiment.`);
+                    if (complaint) parts.push(`Top complaint: "${complaint}".`);
+                    return parts.join(' ');
+                }
+                if (tier === 'caution') {
+                    const parts = [`${fakeBase}% suspicious reviews detected.`];
+                    if (negP > 20) parts.push(`${negP}% negative sentiment across reviews.`);
+                    if (complaint) parts.push(`Watch out for: "${complaint}".`);
+                    return parts.join(' ');
+                }
+                // safe
+                const parts = [`${posP}% of reviews carry positive sentiment via VADER analysis.`];
+                if (fakeBase < 10) parts.push(`Only ${fakeBase}% flagged as potentially fake.`);
+                if (complaint) parts.push(`Minor complaint: "${complaint}".`);
+                return parts.join(' ');
+            };
             if (fakeBase >= 40) {
                 buyVerdict.innerText = 'Avoid — Unreliable Reviews'; buyVerdict.style.color = '#dc2626';
-                buyReason.innerText  = 'Over 40% of reviews appear fake or bot-generated. Ratings are not trustworthy.';
+                buyReason.innerText  = buildReason('avoid');
                 buyCard.style.background = '#FEF2F2';
                 buyIcon.className = 'w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 bg-red-100';
                 buyIcon.innerHTML = '<i class="fas fa-ban text-2xl text-red-500"></i>';
                 buyScore.innerText = confidence + '%'; buyScore.style.color = '#dc2626';
             } else if (fakeBase >= 20) {
                 buyVerdict.innerText = 'Proceed with Caution'; buyVerdict.style.color = '#d97706';
-                buyReason.innerText  = 'Some fake reviews detected. Check 1–3 star reviews carefully before purchasing.';
+                buyReason.innerText  = buildReason('caution');
                 buyCard.style.background = '#FFFBEB';
                 buyIcon.className = 'w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 bg-amber-100';
                 buyIcon.innerHTML = '<i class="fas fa-circle-question text-2xl text-amber-500"></i>';
                 buyScore.innerText = confidence + '%'; buyScore.style.color = '#d97706';
             } else {
                 buyVerdict.innerText = 'Safe to Buy ✓'; buyVerdict.style.color = '#059669';
-                buyReason.innerText  = 'Reviews are predominantly genuine. Sentiment and authenticity signals are strong.';
+                buyReason.innerText  = buildReason('safe');
                 buyCard.style.background = '#F0FDF4';
                 buyIcon.className = 'w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 bg-green-100';
                 buyIcon.innerHTML = '<i class="fas fa-cart-shopping text-2xl text-green-500"></i>';
                 buyScore.innerText = confidence + '%'; buyScore.style.color = '#059669';
             }
 
-            // Sentiment (normalised to 100%)
-            let pos = Math.max(5, Math.min(88, trustBase - 10));
-            let neg = Math.max(5, Math.min(88, fakeBase + 5));
-            let neu = Math.max(2, 100 - pos - neg);
-            const total = pos + neg + neu;
-            pos = Math.round(pos / total * 100);
-            neg = Math.round(neg / total * 100);
-            neu = 100 - pos - neg;
+            // Sentiment — use NLP-derived if available, else calculate from scores
+            let pos, neg, neu;
+            if (sentiment) {
+                pos = sentiment.pos; neg = sentiment.neg; neu = sentiment.neu;
+            } else {
+                pos = Math.max(5, Math.min(88, trustBase - 10));
+                neg = Math.max(5, Math.min(88, fakeBase + 5));
+                neu = Math.max(2, 100 - pos - neg);
+                const total = pos + neg + neu;
+                pos = Math.round(pos / total * 100);
+                neg = Math.round(neg / total * 100);
+                neu = 100 - pos - neg;
+            }
             document.getElementById('sent-pos').innerText = pos + '%';
             document.getElementById('sent-neg').innerText = neg + '%';
             document.getElementById('sent-neu').innerText = neu + '%';
@@ -648,25 +860,38 @@
             document.getElementById('majorIssueText').innerText = majorIssue;
             document.getElementById('majorIssueBanner').style.display = 'flex';
 
-            // Top Complaint
-            document.getElementById('stat-complaint').innerText = pickComplaint(fakeBase, promoFlag, seed);
+            // Top Complaint — use NLP TF-IDF result when available, else heuristic
+            document.getElementById('stat-complaint').innerText = topComplaint || pickComplaint(fakeBase, promoFlag, seed);
 
-            // Vendor hub charts
             updateCharts(trustBase, fakeBase);
             updateVendorPie(trustBase, fakeBase, reviewCount);
-            updateAspects(trustBase, fakeBase);
+            updateAspects(trustBase, fakeBase, aspectScores);
             updateTrend(trustBase, fakeBase, seed, realMonthlyData);
-            updateHealthScore(trustBase, fakeBase);
+            updateHealthScore(trustBase, fakeBase, aspectScores, sentiment);
         }
 
-        function updateHealthScore(trustBase, fakeBase) {
+        function updateHealthScore(trustBase, fakeBase, nlpAspects, sentiment) {
             // Four sub-components, each 0-100, weighted into composite
             const seed = trustBase + fakeBase;
-            const authScore  = Math.max(0, 100 - fakeBase);                          // 40% weight
-            const sentScore  = Math.max(5, Math.min(95, trustBase - 5));              // 25% weight
-            const aspAvg     = Math.min(95, Math.max(10, trustBase - 3 + (seed % 8)));// 25% weight
-            const riskScore  = fakeBase >= 40 ? 20 : fakeBase >= 20 ? 55 : 90;       // 10% weight
+            const authScore = Math.max(0, 100 - fakeBase);   // 40%
 
+            // Sentiment score — use NLP pos% directly if available
+            const sentScore = sentiment
+                ? Math.max(5, Math.min(95, sentiment.pos))
+                : Math.max(5, Math.min(95, trustBase - 5));  // 25%
+
+            // Aspect average — use real NLP scores where available
+            let aspAvg;
+            if (nlpAspects) {
+                const realScores = Object.values(nlpAspects).filter(v => v != null);
+                aspAvg = realScores.length > 0
+                    ? Math.round(realScores.reduce((a,b)=>a+b,0) / realScores.length)
+                    : Math.min(95, Math.max(10, trustBase - 3 + (seed % 8)));
+            } else {
+                aspAvg = Math.min(95, Math.max(10, trustBase - 3 + (seed % 8)));
+            }
+
+            const riskScore = fakeBase >= 40 ? 20 : fakeBase >= 20 ? 55 : 90;   // 10%
             const health = Math.round(authScore * 0.40 + sentScore * 0.25 + aspAvg * 0.25 + riskScore * 0.10);
 
             // Colour + label by tier
@@ -735,20 +960,28 @@
             actionEl.style.color = actionColor;
         }
 
-        function updateAspects(trust, fakePercent) {
+        function updateAspects(trust, fakePercent, nlpAspectScores) {
             const seed = trust + fakePercent;
+            // Use NLP-derived scores where available, fall back to synthetic for missing aspects
+            const synth = {
+                quality:   Math.min(99, Math.max(5, trust - 5  + (seed % 7))),
+                price:     Math.min(99, Math.max(5, trust + 4  - (seed % 9))),
+                delivery:  Math.min(99, Math.max(5, trust - 10 + (seed % 11))),
+                packaging: Math.min(99, Math.max(5, trust + 2  - (seed % 5))),
+                service:   Math.min(99, Math.max(5, trust - 8  + (seed % 13))),
+            };
             const aspects = [
-                { id: 'quality',   label: 'Quality',       score: Math.min(99, Math.max(5, trust - 5  + (seed % 7))) },
-                { id: 'price',     label: 'Price / Value', score: Math.min(99, Math.max(5, trust + 4  - (seed % 9))) },
-                { id: 'delivery',  label: 'Delivery',      score: Math.min(99, Math.max(5, trust - 10 + (seed % 11))) },
-                { id: 'packaging', label: 'Packaging',     score: Math.min(99, Math.max(5, trust + 2  - (seed % 5))) },
-                { id: 'service',   label: 'Cust. Service', score: Math.min(99, Math.max(5, trust - 8  + (seed % 13))) },
+                { id: 'quality',   label: 'Quality',       score: nlpAspectScores?.quality   ?? synth.quality,   nlp: nlpAspectScores?.quality   != null },
+                { id: 'price',     label: 'Price / Value', score: nlpAspectScores?.price     ?? synth.price,     nlp: nlpAspectScores?.price     != null },
+                { id: 'delivery',  label: 'Delivery',      score: nlpAspectScores?.delivery  ?? synth.delivery,  nlp: nlpAspectScores?.delivery  != null },
+                { id: 'packaging', label: 'Packaging',     score: nlpAspectScores?.packaging ?? synth.packaging, nlp: nlpAspectScores?.packaging != null },
+                { id: 'service',   label: 'Cust. Service', score: nlpAspectScores?.service   ?? synth.service,   nlp: nlpAspectScores?.service   != null },
             ];
             const tag = s => s >= 75 ? { t: 'Excellent', c: '#059669' } : s >= 55 ? { t: 'Good', c: '#0891b2' } : s >= 35 ? { t: 'Average', c: '#d97706' } : { t: 'Poor', c: '#dc2626' };
             setTimeout(() => {
                 aspects.forEach(a => {
                     document.getElementById('asp-' + a.id).style.width = a.score + '%';
-                    document.getElementById('lbl-' + a.id).innerText = a.score + '%';
+                    document.getElementById('lbl-' + a.id).innerText = a.score + '%' + (a.nlp ? '' : '*');
                     const t = tag(a.score);
                     const el = document.getElementById('tag-' + a.id);
                     el.innerText = t.t;
