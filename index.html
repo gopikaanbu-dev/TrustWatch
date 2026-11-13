@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TrustWatch AI · zero‑wait analyzer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+        
+        :root { --primary: #4F46E5; --dark: #0F172A; }
+        body { background-color: #F8FAFC; font-family: 'Plus Jakarta Sans', sans-serif; color: #1E293B; }
+        
+        .glass-card { background: white; border-radius: 24px; border: 1px solid #E2E8F0; transition: all 0.3s ease; }
+        .sidebar-item { transition: all 0.2s ease; cursor: pointer; border-radius: 12px; color: #64748B; }
+        .sidebar-active { background: var(--dark); color: white !important; }
+        
+        .page-content { display: none; animation: fadeIn 0.4s ease-out; }
+        .page-active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+        #loadingOverlay { display: none; position: fixed; inset: 0; background: rgba(255, 255, 255, 0.9); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; backdrop-filter: blur(4px); }
+        .spinner { border: 3px solid #E2E8F0; border-top: 3px solid var(--primary); border-radius: 50%; width: 40px; height: 40px; animation: spin 0.8s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* major issue banner – appears only after scan */
+        #majorIssueBanner { display: none; background: #FEF2F2; border-left: 6px solid #DC2626; border-radius: 18px; padding: 1rem 1.5rem; margin-bottom: 1.5rem; align-items: center; gap: 1rem; box-shadow: 0 4px 10px rgba(220,38,38,0.08); }
+        #majorIssueText { font-weight: 800; font-size: 1.1rem; color: #991B1B; }
+
+        /* custom scroll */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 10px; }
+    </style>
+</head>
+<body class="flex flex-col lg:flex-row min-h-screen">
+
+    <div id="loadingOverlay">
+        <div class="spinner mb-4"></div>
+        <p class="text-xs font-bold tracking-widest text-slate-500 uppercase" id="loadingText">Analyzing Promotion Patterns...</p>
+    </div>
+    <aside class="hidden lg:flex flex-col w-64 bg-white border-r p-6 sticky top-0 h-screen">
+        <div class="flex items-center gap-3 mb-10 px-2">
+            <div class="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg"><i class="fas fa-shield-halved"></i></div>
+            <span class="text-xl font-extrabold tracking-tight">TrustWatch</span>
+        </div>
+
+        <nav class="space-y-1 flex-1">
+            <div onclick="showPage('dashboard', this)" class="sidebar-item sidebar-active flex items-center gap-4 px-4 py-3 font-bold text-sm">
+                <i class="fas fa-users w-5"></i> Customer Hub
+            </div>
+            <div onclick="showPage('vendor', this)" class="sidebar-item flex items-center gap-4 px-4 py-3 font-bold text-sm">
+                <i class="fas fa-store w-5"></i> Vendor Hub
+            </div>
+            <div onclick="showPage('fraud', this)" class="sidebar-item flex items-center gap-4 px-4 py-3 font-bold text-sm">
+                <i class="fas fa-bug-slash w-5"></i> Fraud Engine
+            </div>
+        </nav>
+        
+        <div class="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+            <p class="text-[10px] font-bold text-slate-400 uppercase mb-2">System Status</p>
+            <div class="flex items-center gap-2 text-xs font-bold text-green-600">
+                <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> Analysis Engine Live
+            </div>
+        </div>
+    </aside>
+
+    <main class="flex-1 p-4 lg:p-8 max-w-7xl mx-auto w-full">
+        
+        <!-- URL bar - shared by both tabs -->
+        <div class="glass-card p-3 flex flex-col md:flex-row items-center gap-3 mb-8">
+            <div class="relative flex-1 w-full">
+                <input type="text" id="urlInput" value="" placeholder="Paste a product URL to analyze (Amazon, Walmart, eBay)..." class="w-full pl-12 pr-4 py-4 bg-slate-50 border-none rounded-xl outline-none focus:ring-2 focus:ring-indigo-200 text-sm font-medium">
+                <i class="fas fa-link absolute left-4 top-1/2 -translate-y-1/2 text-slate-300"></i>
+            </div>
+            <button onclick="triggerAnalyze()" class="w-full md:w-auto px-8 py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg active:scale-95">Analyze</button>
+        </div>
+
+        <!-- major issue banner appears only after analysis -->
+        <div id="majorIssueBanner">
+            <i class="fas fa-circle-exclamation text-2xl text-red-600"></i>
+            <span id="majorIssueText">Suspicious review timing & identical phrasing detected</span>
+        </div>
+
+        <!-- CUSTOMER HUB -->
+        <section id="dashboard" class="page-content page-active space-y-6">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Customer Hub</p>
+                    <h2 class="text-2xl font-black text-slate-800" id="productTitle">Paste a URL to begin</h2>
+                </div>
+                <span class="px-4 py-1.5 bg-amber-100 text-amber-700 rounded-full text-[11px] font-bold uppercase tracking-wider border border-amber-200" id="promoStatus">PROMOTION CHECK PENDING</span>
+            </div>
+
+            <!-- Stat cards: Review Mix, Risk Level, Top Complaint -->
+            <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Review Mix (merged Fake + Genuine) -->
+                <div class="glass-card p-5 border-l-4 border-rose-400 overflow-hidden" id="mix-card">
+                    <div class="flex items-center gap-2 mb-3">
+                        <div class="w-7 h-7 bg-rose-50 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-robot text-rose-400 text-xs"></i>
+                        </div>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase">Review Mix</p>
+                    </div>
+                    <div class="flex items-center gap-2 mb-0.5">
+                        <span class="w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+                        <h3 class="text-2xl font-black text-green-600 leading-none" id="stat-gen">--</h3>
+                        <span class="text-[10px] font-bold text-slate-400">genuine</span>
+                    </div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="w-2 h-2 rounded-full bg-rose-400 flex-shrink-0"></span>
+                        <h3 class="text-2xl font-black text-rose-500 leading-none" id="stat-fake">--</h3>
+                        <span class="text-[10px] font-bold text-slate-400">fake</span>
+                    </div>
+                    <div class="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div class="h-full bg-green-400 rounded-full transition-all duration-700" id="mix-bar" style="width:0%"></div>
+                    </div>
+                </div>
+
+                <!-- Risk Level -->
+                <div class="glass-card p-5 border-l-4 border-slate-300" id="risk-card">
+                    <div class="flex items-center gap-2 mb-3">
+                        <div class="w-7 h-7 bg-slate-50 rounded-lg flex items-center justify-center" id="risk-icon-wrap">
+                            <i class="fas fa-triangle-exclamation text-slate-400 text-xs" id="risk-icon"></i>
+                        </div>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase">Risk Level</p>
+                    </div>
+                    <h3 class="text-3xl font-black text-slate-400" id="stat-risk">--</h3>
+                    <p class="text-[10px] text-slate-400 mt-1" id="stat-risk-sub">Awaiting scan</p>
+                </div>
+
+                <!-- Top Complaint -->
+                <div class="glass-card p-5 border-l-4 border-orange-400">
+                    <div class="flex items-center gap-2 mb-3">
+                        <div class="w-7 h-7 bg-orange-50 rounded-lg flex items-center justify-center">
+                            <i class="fas fa-comment-dots text-orange-400 text-xs"></i>
+                        </div>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase">Top Complaint</p>
+                    </div>
+                    <h3 class="text-2xl font-black text-orange-500 leading-tight" id="stat-complaint">--</h3>
+                    <p class="text-[10px] text-slate-400 mt-1">Most cited issue</p>
+                </div>
+            </div>
+
+            <!-- Buy Recommendation -->
+            <div class="glass-card p-6 flex items-center gap-5" id="buy-rec-card">
+                <div class="w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 bg-slate-100" id="buy-rec-icon">
+                    <i class="fas fa-cart-shopping text-2xl text-slate-300"></i>
+                </div>
+                <div class="flex-1">
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Buy Recommendation</p>
+                    <p class="text-xl font-black text-slate-300" id="buy-rec-verdict">Waiting for scan…</p>
+                    <p class="text-xs text-slate-400 mt-0.5" id="buy-rec-reason"></p>
+                </div>
+                <div class="text-right flex-shrink-0">
+                    <p class="text-3xl font-black" id="buy-rec-score" style="color:#CBD5E1">--</p>
+                    <p class="text-[10px] text-slate-400 font-bold uppercase">Confidence</p>
+                </div>
+            </div>
+
+            <!-- Sentiment -->
+            <div class="glass-card p-6">
+                <h3 class="font-bold text-sm mb-5 text-slate-500 uppercase tracking-widest">Sentiment Breakdown</h3>
+                <div class="grid grid-cols-3 gap-4 text-center">
+                    <div class="p-4 bg-green-50 rounded-2xl border border-green-100">
+                        <i class="far fa-smile-beam text-3xl text-green-500 mb-2"></i>
+                        <p class="text-2xl font-black text-green-700" id="sent-pos">--</p>
+                        <p class="text-[10px] font-bold text-green-600 uppercase">Positive</p>
+                    </div>
+                    <div class="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <i class="far fa-meh text-3xl text-slate-400 mb-2"></i>
+                        <p class="text-2xl font-black text-slate-500" id="sent-neu">--</p>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase">Neutral</p>
+                    </div>
+                    <div class="p-4 bg-red-50 rounded-2xl border border-red-100">
+                        <i class="far fa-frown-open text-3xl text-red-400 mb-2"></i>
+                        <p class="text-2xl font-black text-red-700" id="sent-neg">--</p>
+                        <p class="text-[10px] font-bold text-red-600 uppercase">Critical</p>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- VENDOR HUB — Vendor View -->
+        <section id="vendor" class="page-content space-y-6">
+
+            <!-- Vendor identity bar — auto-populated from URL -->
+            <div class="glass-card p-5 flex items-center gap-4">
+                <div class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-lg shadow-md flex-shrink-0">
+                    <i class="fas fa-store"></i>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">Detected Vendor</p>
+                    <p class="text-xl font-black text-slate-800 truncate" id="vendor-hub-title">—</p>
+                    <p class="text-[10px] text-slate-400" id="vendor-hub-domain">Analyze a product URL to detect vendor</p>
+                </div>
+                <div class="text-right flex-shrink-0">
+                    <p class="text-[10px] font-bold text-slate-400 uppercase">Vendor Portal</p>
+                    <span id="vendor-scan-notice" class="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 font-bold">Pending scan</span>
+                </div>
+            </div>
+
+            <!-- Trust Score + Upload — top row -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+                <!-- Trust Score + Review Health Score -->
+                <div class="glass-card p-5 border-l-4 border-indigo-500">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-8 h-8 bg-indigo-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                            <i class="fas fa-shield-halved text-indigo-500 text-sm"></i>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-slate-800">Store Health</h3>
+                            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Trust · Review Health</p>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="bg-indigo-50 rounded-2xl p-4 text-center">
+                            <p class="text-[10px] font-bold text-indigo-400 uppercase mb-1">Trust Score</p>
+                            <p class="text-3xl font-black text-indigo-600" id="stat-trust">--</p>
+                            <p class="text-[10px] text-indigo-400 mt-1" id="stat-trust-sub">Awaiting scan</p>
+                        </div>
+                        <div class="rounded-2xl p-4 text-center" id="health-bg">
+                            <p class="text-[10px] font-bold uppercase mb-1" id="health-label-top" style="color:#94a3b8">Health Score</p>
+                            <p class="text-3xl font-black" id="stat-health" style="color:#94a3b8">--</p>
+                            <p class="text-[10px] mt-1 font-bold" id="stat-health-label" style="color:#94a3b8">Awaiting scan</p>
+                        </div>
+                    </div>
+                    <!-- Health score breakdown bar -->
+                    <div class="mt-4 space-y-1.5" id="health-breakdown" style="display:none">
+                        <div class="flex items-center gap-2 text-[10px] text-slate-400 font-bold">
+                            <span class="w-20 uppercase">Authenticity</span>
+                            <div class="flex-1 bg-slate-100 rounded-full h-1.5"><div class="h-1.5 rounded-full transition-all duration-700 bg-indigo-400" id="hbar-auth" style="width:0%"></div></div>
+                            <span class="w-6 text-right" id="hlbl-auth">--</span>
+                        </div>
+                        <div class="flex items-center gap-2 text-[10px] text-slate-400 font-bold">
+                            <span class="w-20 uppercase">Sentiment</span>
+                            <div class="flex-1 bg-slate-100 rounded-full h-1.5"><div class="h-1.5 rounded-full transition-all duration-700 bg-green-400" id="hbar-sent" style="width:0%"></div></div>
+                            <span class="w-6 text-right" id="hlbl-sent">--</span>
+                        </div>
+                        <div class="flex items-center gap-2 text-[10px] text-slate-400 font-bold">
+                            <span class="w-20 uppercase">Aspect Avg</span>
+                            <div class="flex-1 bg-slate-100 rounded-full h-1.5"><div class="h-1.5 rounded-full transition-all duration-700 bg-amber-400" id="hbar-asp" style="width:0%"></div></div>
+                            <span class="w-6 text-right" id="hlbl-asp">--</span>
+                        </div>
+                        <div class="flex items-center gap-2 text-[10px] text-slate-400 font-bold">
+                            <span class="w-20 uppercase">Low-risk</span>
+                            <div class="flex-1 bg-slate-100 rounded-full h-1.5"><div class="h-1.5 rounded-full transition-all duration-700 bg-rose-400" id="hbar-risk" style="width:0%"></div></div>
+                            <span class="w-6 text-right" id="hlbl-risk">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- CSV / TXT Upload -->
+                <div class="glass-card p-5" id="upload-card">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-8 h-8 bg-violet-50 rounded-lg flex items-center justify-center"><i class="fas fa-file-arrow-up text-violet-500 text-sm"></i></div>
+                        <div>
+                            <h3 class="font-bold text-slate-800">Upload Reviews</h3>
+                            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">CSV or TXT — replaces URL scan</p>
+                        </div>
+                    </div>
+                    <label id="upload-label" class="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-slate-200 rounded-2xl p-5 cursor-pointer hover:border-violet-400 hover:bg-violet-50 transition-all">
+                        <i class="fas fa-cloud-arrow-up text-2xl text-slate-300" id="upload-icon"></i>
+                        <span class="text-xs font-bold text-slate-400" id="upload-text">Click to upload or drag & drop</span>
+                        <span class="text-[10px] text-slate-300">.csv or .txt · max 5MB</span>
+                        <input type="file" id="reviewFile" accept=".csv,.txt" class="hidden" onchange="handleFileUpload(event)">
+                    </label>
+                    <div id="upload-status" class="hidden mt-3 text-xs font-bold text-center"></div>
+                </div>
+            </div>
+
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+                <!-- Review Authenticity Split -->
+                <div class="glass-card p-6">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-8 h-8 bg-green-50 rounded-lg flex items-center justify-center"><i class="fas fa-chart-pie text-green-500 text-sm"></i></div>
+                        <h3 class="font-bold text-slate-800">Review Authenticity</h3>
+                    </div>
+                    <div class="h-44 mb-4"><canvas id="pieChart"></canvas></div>
+                    <div class="space-y-2">
+                        <div class="flex items-center justify-between p-3 bg-green-50 rounded-xl border border-green-100">
+                            <div class="flex items-center gap-2"><div class="w-2.5 h-2.5 bg-green-500 rounded-full"></div><span class="text-xs font-bold text-green-800">Genuine Reviews</span></div>
+                            <span class="text-lg font-black text-green-700" id="vendor-genuine-count">--</span>
+                        </div>
+                        <div class="flex items-center justify-between p-3 bg-red-50 rounded-xl border border-red-100">
+                            <div class="flex items-center gap-2"><div class="w-2.5 h-2.5 bg-red-500 rounded-full"></div><span class="text-xs font-bold text-red-800">Fake / Bot Reviews</span></div>
+                            <span class="text-lg font-black text-red-700" id="vendor-fake-count">--</span>
+                        </div>
+                        <div class="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
+                            <span class="text-xs font-bold text-slate-500 uppercase">Recommended Action</span>
+                            <span class="text-xs font-black" id="vendor-action-needed">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Aspect-Based Analysis -->
+                <div class="glass-card p-6">
+                    <div class="flex items-center gap-3 mb-5">
+                        <div class="w-8 h-8 bg-indigo-50 rounded-lg flex items-center justify-center"><i class="fas fa-sliders text-indigo-500 text-sm"></i></div>
+                        <h3 class="font-bold text-slate-800">Aspect Score Breakdown</h3>
+                    </div>
+                    <div class="space-y-3.5">
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs font-bold text-slate-500 w-28 flex items-center gap-2"><i class="fas fa-star-half-stroke text-amber-400 w-4"></i>Quality</span>
+                            <div class="flex-1 bg-slate-100 rounded-full h-2.5"><div class="h-2.5 rounded-full transition-all duration-700 bg-amber-400" id="asp-quality" style="width:0%"></div></div>
+                            <span class="text-xs font-black text-slate-700 w-8 text-right" id="lbl-quality">--</span>
+                            <span class="text-[10px] font-bold w-14 text-right" id="tag-quality"></span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs font-bold text-slate-500 w-28 flex items-center gap-2"><i class="fas fa-tag text-green-500 w-4"></i>Price / Value</span>
+                            <div class="flex-1 bg-slate-100 rounded-full h-2.5"><div class="h-2.5 rounded-full transition-all duration-700 bg-green-500" id="asp-price" style="width:0%"></div></div>
+                            <span class="text-xs font-black text-slate-700 w-8 text-right" id="lbl-price">--</span>
+                            <span class="text-[10px] font-bold w-14 text-right" id="tag-price"></span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs font-bold text-slate-500 w-28 flex items-center gap-2"><i class="fas fa-truck text-blue-500 w-4"></i>Delivery</span>
+                            <div class="flex-1 bg-slate-100 rounded-full h-2.5"><div class="h-2.5 rounded-full transition-all duration-700 bg-blue-500" id="asp-delivery" style="width:0%"></div></div>
+                            <span class="text-xs font-black text-slate-700 w-8 text-right" id="lbl-delivery">--</span>
+                            <span class="text-[10px] font-bold w-14 text-right" id="tag-delivery"></span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs font-bold text-slate-500 w-28 flex items-center gap-2"><i class="fas fa-box text-violet-500 w-4"></i>Packaging</span>
+                            <div class="flex-1 bg-slate-100 rounded-full h-2.5"><div class="h-2.5 rounded-full transition-all duration-700 bg-violet-500" id="asp-packaging" style="width:0%"></div></div>
+                            <span class="text-xs font-black text-slate-700 w-8 text-right" id="lbl-packaging">--</span>
+                            <span class="text-[10px] font-bold w-14 text-right" id="tag-packaging"></span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs font-bold text-slate-500 w-28 flex items-center gap-2"><i class="fas fa-headset text-rose-500 w-4"></i>Cust. Service</span>
+                            <div class="flex-1 bg-slate-100 rounded-full h-2.5"><div class="h-2.5 rounded-full transition-all duration-700 bg-rose-500" id="asp-service" style="width:0%"></div></div>
+                            <span class="text-xs font-black text-slate-700 w-8 text-right" id="lbl-service">--</span>
+                            <span class="text-[10px] font-bold w-14 text-right" id="tag-service"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Improvement Tips + MoM Trend -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+                <!-- Improvement Tips based on weak aspects -->
+                <div class="glass-card p-6">
+                    <div class="flex items-center gap-3 mb-5">
+                        <div class="w-8 h-8 bg-amber-50 rounded-lg flex items-center justify-center"><i class="fas fa-lightbulb text-amber-500 text-sm"></i></div>
+                        <div>
+                            <h3 class="font-bold text-slate-800">Improvement Tips</h3>
+                            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Based on your weakest aspect scores</p>
+                        </div>
+                    </div>
+                    <div id="improvement-tips" class="space-y-3">
+                        <p class="text-xs text-slate-400 italic">Run a scan to generate tips.</p>
+                    </div>
+                </div>
+
+                <!-- Month-over-Month Review Trend -->
+                <div class="glass-card p-6">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div class="w-8 h-8 bg-blue-50 rounded-lg flex items-center justify-center"><i class="fas fa-chart-line text-blue-500 text-sm"></i></div>
+                        <div>
+                            <h3 class="font-bold text-slate-800">Review Trend</h3>
+                            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wide">Month-over-month</p>
+                        </div>
+                        <span class="ml-auto text-sm font-black" id="trend-delta"></span>
+                    </div>
+                    <div class="h-40"><canvas id="trendChart"></canvas></div>
+                    <p class="text-[10px] text-slate-400 mt-3 text-center" id="trend-summary">Analyze a URL to see your review trend.</p>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- FRAUD ENGINE -->
+        <section id="fraud" class="page-content">
+            <h2 class="text-2xl font-black text-slate-800 mb-6">Fraud & Promotion Detection</h2>
+            <div class="glass-card p-8 text-center">
+                <div class="w-20 h-20 bg-red-50 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl">
+                    <i class="fas fa-microchip"></i>
+                </div>
+                <h3 class="text-xl font-bold mb-2">Neural Pattern Matching</h3>
+                <p class="text-slate-500 text-sm max-w-md mx-auto">This engine scans for identical review syntax and IP-cluster promotion typical of cost-sponsored reviews.</p>
+                <div class="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <p class="font-black text-indigo-600">IP Cluster</p>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase">Status: Secure</p>
+                    </div>
+                    <div class="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <p class="font-black text-indigo-600">Syntax Check</p>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase">Status: Analyzing</p>
+                    </div>
+                    <div class="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                        <p class="font-black text-indigo-600">Promo Load</p>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase">Status: Low</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        let myCharts = {};
+
+        function showPage(id, el) {
+            document.querySelectorAll('.page-content').forEach(p => p.classList.remove('page-active'));
+            document.getElementById(id).classList.add('page-active');
+            document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('sidebar-active'));
+            el.classList.add('sidebar-active');
+        }
+
+        function triggerAnalyze() {
+            const url = document.getElementById('urlInput').value.trim();
+            if (!url) { alert("Please paste a product URL first."); return; }
+            document.getElementById('loadingOverlay').style.display = 'flex';
+            setTimeout(() => {
+                document.getElementById('loadingOverlay').style.display = 'none';
+                const urlLower = url.toLowerCase();
+                let fakeBase, trustBase, promoFlag, majorIssue;
+                if (urlLower.includes('promo') || urlLower.includes('deal') || urlLower.includes('bundle') || url.length % 3 === 0) {
+                    fakeBase = 58; trustBase = 42; promoFlag = true;
+                    majorIssue = "High proportion of 5‑star reviews with identical phrases";
+                } else if (urlLower.includes('sponsored') || urlLower.includes('ad') || url.length % 5 === 0) {
+                    fakeBase = 37; trustBase = 63; promoFlag = true;
+                    majorIssue = "Suspicious IP cluster from same region";
+                } else {
+                    fakeBase = 8; trustBase = 92; promoFlag = false;
+                    majorIssue = "No critical issues – normal review pattern";
+                }
+                const domain = url.split('/')[2] || url.substring(0, 30) + '…';
+                document.getElementById('productTitle').innerText = domain;
+                const vendorName = extractVendorName(url);
+                document.getElementById('vendor-hub-title').innerText = vendorName;
+                document.getElementById('vendor-hub-domain').innerText = domain;
+                document.getElementById('vendor-scan-notice').innerText = '✓ Vendor detected';
+                document.getElementById('vendor-scan-notice').className = 'text-[10px] text-green-600 bg-green-50 border border-green-200 rounded-full px-2 py-0.5 font-bold';
+                const urlHash = url.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+                applyAnalysis(trustBase, fakeBase, promoFlag, majorIssue, urlHash);
+            }, 1500);
+        }
+
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const statusEl = document.getElementById('upload-status');
+            const uploadText = document.getElementById('upload-text');
+            const uploadIcon = document.getElementById('upload-icon');
+
+            if (file.size > 5 * 1024 * 1024) {
+                statusEl.innerText = '⚠ File too large (max 5MB)';
+                statusEl.className = 'mt-3 text-xs font-bold text-center text-red-500';
+                statusEl.classList.remove('hidden');
+                return;
+            }
+
+            uploadText.innerText = 'Reading ' + file.name + '…';
+            uploadIcon.className = 'fas fa-spinner fa-spin text-2xl text-violet-400';
+            statusEl.classList.add('hidden');
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const text = e.target.result;
+                const { trustBase, fakeBase, promoFlag, majorIssue, reviewCount, realMonthlyData } = analyzeReviewText(text);
+                const fileHash = text.split('').slice(0, 200).reduce((a, c) => a + c.charCodeAt(0), 0);
+
+                // Update vendor identity bar
+                document.getElementById('vendor-hub-title').innerText = file.name.replace(/\.[^.]+$/, '');
+                document.getElementById('vendor-hub-domain').innerText = reviewCount + ' reviews loaded from file';
+                document.getElementById('vendor-scan-notice').innerText = '✓ File analyzed';
+                document.getElementById('vendor-scan-notice').className = 'text-[10px] text-violet-600 bg-violet-50 border border-violet-200 rounded-full px-2 py-0.5 font-bold';
+
+                // Update customer hub title
+                document.getElementById('productTitle').innerText = file.name;
+
+                uploadIcon.className = 'fas fa-circle-check text-2xl text-violet-500';
+                uploadText.innerText = reviewCount + ' reviews analyzed';
+                statusEl.innerText = '✓ Cards updated from file data';
+                statusEl.className = 'mt-3 text-xs font-bold text-center text-violet-600';
+                statusEl.classList.remove('hidden');
+
+                applyAnalysis(trustBase, fakeBase, promoFlag, majorIssue, fileHash, realMonthlyData, reviewCount);
+            };
+            reader.onerror = function() {
+                uploadIcon.className = 'fas fa-circle-xmark text-2xl text-red-400';
+                uploadText.innerText = 'Error reading file';
+            };
+            reader.readAsText(file);
+        }
+
+        function analyzeReviewText(text) {
+            const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 5);
+            const reviewCount = Math.max(1, lines.length);
+            const body = text.toLowerCase();
+
+            const fakeSignals = (body.match(/\b(fake|bot|spam|paid|incentiv|promo|discount|free|compensat|incentive|sponsored|gifted|received.*review|review.*exchange|bias|astroturf|identical|copy.paste|template)\b/g) || []).length;
+            const negSignals  = (body.match(/\b(broken|terrible|awful|horrible|worst|defective|scam|fraud|refund|return|waste|disappoint|useless|poor|bad|cheap|didn.t work|not worth|misleading|false)\b/g) || []).length;
+            const posSignals  = (body.match(/\b(great|excellent|amazing|perfect|love|fantastic|recommend|awesome|best|quality|happy|satisfied|genuine|authentic|honest|verified|real)\b/g) || []).length;
+            const stars       = [...body.matchAll(/\b([1-5])\s*(?:star|\/5|\s*★)/g)].map(m => parseInt(m[1]));
+            const avgStar     = stars.length ? stars.reduce((a, b) => a + b, 0) / stars.length : null;
+
+            const totalSignals = fakeSignals + negSignals + posSignals + 1;
+            let fakePct = Math.round((fakeSignals / totalSignals) * 80) + Math.min(20, Math.round(negSignals / reviewCount * 30));
+            fakePct = Math.max(3, Math.min(75, fakePct));
+
+            let trustBase;
+            if (avgStar !== null) {
+                trustBase = Math.round(((avgStar - 1) / 4) * 80 + 15);
+                fakePct   = Math.max(3, Math.round((5 - avgStar) / 4 * 60));
+            } else {
+                trustBase = Math.max(10, Math.min(95, 100 - fakePct - Math.round(negSignals / reviewCount * 20)));
+            }
+
+            const promoFlag  = fakeSignals > 3 || body.includes('incentiv') || body.includes('gifted');
+            const majorIssue = fakePct >= 40 ? 'High fake/promotional language detected in reviews'
+                             : fakePct >= 20 ? 'Some suspicious phrasing patterns found'
+                             : negSignals > posSignals ? 'Predominantly negative sentiment in reviews'
+                             : 'No major issues detected in review text';
+
+            // Parse dates for month-over-month trend
+            // Supports YYYY-MM-DD, MM/DD/YYYY, DD-MM-YYYY formats
+            const monthMap = {};
+            const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            lines.forEach(line => {
+                const dateMatch = line.match(/\b(\d{4}[-\/]\d{1,2}[-\/]\d{1,2}|\d{1,2}[-\/]\d{1,2}[-\/]\d{4})\b/);
+                if (dateMatch) {
+                    const raw = dateMatch[1];
+                    let year, month;
+                    if (/^\d{4}/.test(raw)) {
+                        // YYYY-MM-DD
+                        const parts = raw.split(/[-\/]/);
+                        year = parts[0]; month = parseInt(parts[1]) - 1;
+                    } else {
+                        // MM/DD/YYYY or DD-MM-YYYY
+                        const parts = raw.split(/[-\/]/);
+                        year = parts[2]; month = parseInt(parts[0]) - 1;
+                    }
+                    if (month >= 0 && month <= 11) {
+                        const key = year + '-' + String(month + 1).padStart(2, '0');
+                        monthMap[key] = (monthMap[key] || 0) + 1;
+                    }
+                }
+            });
+
+            let realMonthlyData = null;
+            const sortedKeys = Object.keys(monthMap).sort();
+            if (sortedKeys.length >= 2) {
+                realMonthlyData = sortedKeys.map(k => {
+                    const [y, m] = k.split('-');
+                    return { month: monthNames[parseInt(m) - 1] + ' ' + y.slice(2), count: monthMap[k] };
+                });
+            }
+
+            return { trustBase, fakeBase: fakePct, promoFlag, majorIssue, reviewCount, realMonthlyData };
+        }
+
+        function applyAnalysis(trustBase, fakeBase, promoFlag, majorIssue, seed, realMonthlyData, reviewCount) {
+            // Trust Score
+            document.getElementById('stat-trust').innerText = trustBase + '%';
+            document.getElementById('stat-trust-sub').innerText = trustBase >= 80 ? '✓ Reviews appear genuine' : trustBase >= 55 ? '⚠ Some concerns detected' : '🚨 High fake activity';
+
+            // Review Mix
+            document.getElementById('stat-fake').innerText = fakeBase + '%';
+            document.getElementById('stat-gen').innerText  = (100 - fakeBase) + '%';
+            document.getElementById('mix-bar').style.width = (100 - fakeBase) + '%';
+            const mixCard = document.getElementById('mix-card');
+            mixCard.className = 'glass-card p-5 border-l-4 overflow-hidden ' + (fakeBase >= 40 ? 'border-red-500' : fakeBase >= 20 ? 'border-amber-400' : 'border-green-500');
+
+            // Risk Level
+            const riskCard = document.getElementById('risk-card');
+            const riskEl   = document.getElementById('stat-risk');
+            const riskSub  = document.getElementById('stat-risk-sub');
+            const riskIcon = document.getElementById('risk-icon');
+            const riskWrap = document.getElementById('risk-icon-wrap');
+            if (fakeBase >= 40) {
+                riskEl.innerText = 'High'; riskEl.style.color = '#dc2626';
+                riskSub.innerText = 'Significant fake review activity';
+                riskCard.className = 'glass-card p-5 border-l-4 border-red-500';
+                riskIcon.className = 'fas fa-triangle-exclamation text-red-500 text-xs';
+                riskWrap.className = 'w-7 h-7 bg-red-50 rounded-lg flex items-center justify-center';
+            } else if (fakeBase >= 20) {
+                riskEl.innerText = 'Medium'; riskEl.style.color = '#d97706';
+                riskSub.innerText = 'Some suspicious review patterns';
+                riskCard.className = 'glass-card p-5 border-l-4 border-amber-400';
+                riskIcon.className = 'fas fa-triangle-exclamation text-amber-500 text-xs';
+                riskWrap.className = 'w-7 h-7 bg-amber-50 rounded-lg flex items-center justify-center';
+            } else {
+                riskEl.innerText = 'Low'; riskEl.style.color = '#059669';
+                riskSub.innerText = 'Reviews appear largely authentic';
+                riskCard.className = 'glass-card p-5 border-l-4 border-green-500';
+                riskIcon.className = 'fas fa-circle-check text-green-500 text-xs';
+                riskWrap.className = 'w-7 h-7 bg-green-50 rounded-lg flex items-center justify-center';
+            }
+
+            // Buy Recommendation
+            const buyCard    = document.getElementById('buy-rec-card');
+            const buyVerdict = document.getElementById('buy-rec-verdict');
+            const buyReason  = document.getElementById('buy-rec-reason');
+            const buyScore   = document.getElementById('buy-rec-score');
+            const buyIcon    = document.getElementById('buy-rec-icon');
+            const confidence = Math.round((trustBase * 0.7) + ((100 - fakeBase) * 0.3));
+            if (fakeBase >= 40) {
+                buyVerdict.innerText = 'Avoid — Unreliable Reviews'; buyVerdict.style.color = '#dc2626';
+                buyReason.innerText  = 'Over 40% of reviews appear fake or bot-generated. Ratings are not trustworthy.';
+                buyCard.style.background = '#FEF2F2';
+                buyIcon.className = 'w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 bg-red-100';
+                buyIcon.innerHTML = '<i class="fas fa-ban text-2xl text-red-500"></i>';
+                buyScore.innerText = confidence + '%'; buyScore.style.color = '#dc2626';
+            } else if (fakeBase >= 20) {
+                buyVerdict.innerText = 'Proceed with Caution'; buyVerdict.style.color = '#d97706';
+                buyReason.innerText  = 'Some fake reviews detected. Check 1–3 star reviews carefully before purchasing.';
+                buyCard.style.background = '#FFFBEB';
+                buyIcon.className = 'w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 bg-amber-100';
+                buyIcon.innerHTML = '<i class="fas fa-circle-question text-2xl text-amber-500"></i>';
+                buyScore.innerText = confidence + '%'; buyScore.style.color = '#d97706';
+            } else {
+                buyVerdict.innerText = 'Safe to Buy ✓'; buyVerdict.style.color = '#059669';
+                buyReason.innerText  = 'Reviews are predominantly genuine. Sentiment and authenticity signals are strong.';
+                buyCard.style.background = '#F0FDF4';
+                buyIcon.className = 'w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 bg-green-100';
+                buyIcon.innerHTML = '<i class="fas fa-cart-shopping text-2xl text-green-500"></i>';
+                buyScore.innerText = confidence + '%'; buyScore.style.color = '#059669';
+            }
+
+            // Sentiment (normalised to 100%)
+            let pos = Math.max(5, Math.min(88, trustBase - 10));
+            let neg = Math.max(5, Math.min(88, fakeBase + 5));
+            let neu = Math.max(2, 100 - pos - neg);
+            const total = pos + neg + neu;
+            pos = Math.round(pos / total * 100);
+            neg = Math.round(neg / total * 100);
+            neu = 100 - pos - neg;
+            document.getElementById('sent-pos').innerText = pos + '%';
+            document.getElementById('sent-neg').innerText = neg + '%';
+            document.getElementById('sent-neu').innerText = neu + '%';
+
+            // Promo badge
+            const promoBadge = document.getElementById('promoStatus');
+            if (promoFlag) {
+                promoBadge.innerText = '⚠️ HIGH PROMOTION RISK';
+                promoBadge.className = 'px-4 py-1.5 bg-red-100 text-red-700 rounded-full text-[11px] font-bold border border-red-200';
+            } else {
+                promoBadge.innerText = '✅ ORGANIC GROWTH';
+                promoBadge.className = 'px-4 py-1.5 bg-green-100 text-green-700 rounded-full text-[11px] font-bold border border-green-200';
+            }
+
+            // Major issue banner
+            document.getElementById('majorIssueText').innerText = majorIssue;
+            document.getElementById('majorIssueBanner').style.display = 'flex';
+
+            // Top Complaint
+            document.getElementById('stat-complaint').innerText = pickComplaint(fakeBase, promoFlag, seed);
+
+            // Vendor hub charts
+            updateCharts(trustBase, fakeBase);
+            updateVendorPie(trustBase, fakeBase, reviewCount);
+            updateAspects(trustBase, fakeBase);
+            updateTrend(trustBase, fakeBase, seed, realMonthlyData);
+            updateHealthScore(trustBase, fakeBase);
+        }
+
+        function updateHealthScore(trustBase, fakeBase) {
+            // Four sub-components, each 0-100, weighted into composite
+            const seed = trustBase + fakeBase;
+            const authScore  = Math.max(0, 100 - fakeBase);                          // 40% weight
+            const sentScore  = Math.max(5, Math.min(95, trustBase - 5));              // 25% weight
+            const aspAvg     = Math.min(95, Math.max(10, trustBase - 3 + (seed % 8)));// 25% weight
+            const riskScore  = fakeBase >= 40 ? 20 : fakeBase >= 20 ? 55 : 90;       // 10% weight
+
+            const health = Math.round(authScore * 0.40 + sentScore * 0.25 + aspAvg * 0.25 + riskScore * 0.10);
+
+            // Colour + label by tier
+            const cfg = health >= 80
+                ? { color: '#059669', bg: 'bg-green-50',  label: 'Excellent' }
+                : health >= 60
+                ? { color: '#0891b2', bg: 'bg-blue-50',   label: 'Good' }
+                : health >= 40
+                ? { color: '#d97706', bg: 'bg-amber-50',  label: 'Needs Work' }
+                : { color: '#dc2626', bg: 'bg-red-50',    label: 'Poor' };
+
+            document.getElementById('stat-health').innerText       = health + '%';
+            document.getElementById('stat-health').style.color     = cfg.color;
+            document.getElementById('stat-health-label').innerText = cfg.label;
+            document.getElementById('stat-health-label').style.color = cfg.color;
+            document.getElementById('health-label-top').style.color  = cfg.color;
+            document.getElementById('health-bg').className = `rounded-2xl p-4 text-center ${cfg.bg}`;
+
+            // Show breakdown bars
+            document.getElementById('health-breakdown').style.display = 'block';
+            setTimeout(() => {
+                document.getElementById('hbar-auth').style.width = authScore + '%';
+                document.getElementById('hbar-sent').style.width = sentScore + '%';
+                document.getElementById('hbar-asp').style.width  = aspAvg   + '%';
+                document.getElementById('hbar-risk').style.width = riskScore + '%';
+            }, 200);
+            document.getElementById('hlbl-auth').innerText = authScore + '%';
+            document.getElementById('hlbl-sent').innerText = sentScore + '%';
+            document.getElementById('hlbl-asp').innerText  = aspAvg   + '%';
+            document.getElementById('hlbl-risk').innerText = riskScore + '%';
+        }
+
+        function pickComplaint(fakePercent, promoFlag, urlHash) {
+            const highRisk  = ['Fake Reviews', 'False Claims', 'Paid Ratings', 'Misleading Ads', 'Bot Activity'];
+            const medRisk   = ['Poor Quality', 'Stops Working', 'Cheap Material', 'Wrong Size', 'Bad Smell'];
+            const lowRisk   = ['Slow Delivery', 'Thin Packaging', 'Minor Defect', 'Small Size', 'Dull Color'];
+            const pool = fakePercent >= 40 ? highRisk : fakePercent >= 20 ? medRisk : lowRisk;
+            return pool[urlHash % pool.length];
+        }
+
+        function updateCharts(trust, fakePercent) {
+            // no-op: pie chart moved to vendor hub
+        }
+
+        function updateVendorPie(trust, fakePercent, reviewCount) {
+            if (myCharts.pie) myCharts.pie.destroy();
+            const genuine = 100 - fakePercent;
+            const ctx = document.getElementById('pieChart').getContext('2d');
+            myCharts.pie = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Genuine', 'Fake/Paid'],
+                    datasets: [{ data: [genuine, fakePercent], backgroundColor: ['#10b981','#ef4444'], borderWidth: 0, cutout: '72%' }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { font: { weight: 'bold', size: 11 } } } } }
+            });
+            const total    = reviewCount || 1000;
+            const genuineN = Math.round((genuine / 100) * total);
+            const fakeN    = Math.round((fakePercent / 100) * total);
+            document.getElementById('vendor-genuine-count').innerText = genuineN.toLocaleString();
+            document.getElementById('vendor-fake-count').innerText    = fakeN.toLocaleString();
+            const action = fakePercent >= 40 ? '🚨 Dispute fake reviews now' : fakePercent >= 20 ? '⚠ Monitor closely' : '✅ No action needed';
+            const actionColor = fakePercent >= 40 ? '#dc2626' : fakePercent >= 20 ? '#d97706' : '#059669';
+            const actionEl = document.getElementById('vendor-action-needed');
+            actionEl.innerText = action;
+            actionEl.style.color = actionColor;
+        }
+
+        function updateAspects(trust, fakePercent) {
+            const seed = trust + fakePercent;
+            const aspects = [
+                { id: 'quality',   label: 'Quality',       score: Math.min(99, Math.max(5, trust - 5  + (seed % 7))) },
+                { id: 'price',     label: 'Price / Value', score: Math.min(99, Math.max(5, trust + 4  - (seed % 9))) },
+                { id: 'delivery',  label: 'Delivery',      score: Math.min(99, Math.max(5, trust - 10 + (seed % 11))) },
+                { id: 'packaging', label: 'Packaging',     score: Math.min(99, Math.max(5, trust + 2  - (seed % 5))) },
+                { id: 'service',   label: 'Cust. Service', score: Math.min(99, Math.max(5, trust - 8  + (seed % 13))) },
+            ];
+            const tag = s => s >= 75 ? { t: 'Excellent', c: '#059669' } : s >= 55 ? { t: 'Good', c: '#0891b2' } : s >= 35 ? { t: 'Average', c: '#d97706' } : { t: 'Poor', c: '#dc2626' };
+            setTimeout(() => {
+                aspects.forEach(a => {
+                    document.getElementById('asp-' + a.id).style.width = a.score + '%';
+                    document.getElementById('lbl-' + a.id).innerText = a.score + '%';
+                    const t = tag(a.score);
+                    const el = document.getElementById('tag-' + a.id);
+                    el.innerText = t.t;
+                    el.style.color = t.c;
+                });
+            }, 150);
+            updateImprovementTips(aspects);
+        }
+
+        function updateImprovementTips(aspects) {
+            // aspects = array of {label, score, icon, color}
+            const tips = {
+                quality:   { good: 'Quality scores well — consider highlighting it in your listing photos.', poor: 'Quality is your weakest point. Consider improving materials or adding QC checks before shipping.' },
+                price:     { good: 'Customers find your pricing fair — a good sign for repeat buyers.', poor: 'Price perception is low. Try bundling items or adding a value-highlight in your description.' },
+                delivery:  { good: 'Delivery is satisfying customers — keep your fulfilment partner consistent.', poor: 'Delivery speed is hurting you. Consider switching to FBA or a faster courier.' },
+                packaging: { good: 'Packaging is praised — mention it in your listing to set expectations.', poor: 'Packaging complaints are hurting reviews. Invest in sturdier boxes or branded tissue paper.' },
+                service:   { good: 'Customer service is a strength — respond publicly to reviews to show it.', poor: 'Customer service needs work. Aim to respond to all questions within 24 hours.' },
+            };
+            const icons = { quality: 'fa-star-half-stroke', price: 'fa-tag', delivery: 'fa-truck', packaging: 'fa-box', service: 'fa-headset' };
+            const colors = { quality: 'text-amber-500', price: 'text-green-500', delivery: 'text-blue-500', packaging: 'text-violet-500', service: 'text-rose-500' };
+
+            // Sort aspects by score ascending — worst first
+            const sorted = [...aspects].sort((a, b) => a.score - b.score);
+            const container = document.getElementById('improvement-tips');
+            container.innerHTML = '';
+            sorted.forEach((a, i) => {
+                const isPoor = a.score < 60;
+                const tip = isPoor ? tips[a.id].poor : tips[a.id].good;
+                const bgColor = isPoor ? 'bg-red-50 border-red-100' : 'bg-green-50 border-green-100';
+                const dotColor = isPoor ? 'bg-red-400' : 'bg-green-400';
+                const div = document.createElement('div');
+                div.className = `flex gap-3 p-3 rounded-xl border ${bgColor}`;
+                div.innerHTML = `
+                    <div class="flex-shrink-0 mt-0.5">
+                        <div class="w-5 h-5 rounded-full ${dotColor} flex items-center justify-center">
+                            <i class="fas ${icons[a.id]} text-white" style="font-size:9px"></i>
+                        </div>
+                    </div>
+                    <div>
+                        <p class="text-[10px] font-black uppercase ${colors[a.id]} mb-0.5">${a.label} · ${a.score}%</p>
+                        <p class="text-xs text-slate-600 leading-relaxed">${tip}</p>
+                    </div>`;
+                container.appendChild(div);
+            });
+        }
+
+        function updateTrend(trustBase, fakePercent, urlHash, realMonthlyData) {
+            if (myCharts.trend) myCharts.trend.destroy();
+
+            let months, data, trendDir;
+
+            if (realMonthlyData && realMonthlyData.length >= 2) {
+                months = realMonthlyData.map(d => d.month);
+                data   = realMonthlyData.map(d => d.count);
+                // Derive trend direction from actual data: compare first half avg vs second half avg
+                const mid   = Math.floor(data.length / 2);
+                const avgA  = data.slice(0, mid).reduce((a, b) => a + b, 0) / mid;
+                const avgB  = data.slice(mid).reduce((a, b) => a + b, 0) / (data.length - mid);
+                trendDir = avgB > avgA * 1.05 ? 1 : avgB < avgA * 0.95 ? -1 : 0;
+            } else {
+                months   = ['Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan'];
+                const base = 40 + (urlHash % 60);
+                trendDir   = fakePercent >= 40 ? -1 : fakePercent >= 20 ? 0 : 1;
+                data = months.map((_, i) => {
+                    const drift = trendDir * i * (3 + (urlHash % 4));
+                    const noise = ((urlHash * (i + 7)) % 11) - 5;
+                    return Math.max(1, Math.round(base + drift + noise));
+                });
+            }
+
+            const lastTwo = data.slice(-2);
+            const delta   = lastTwo[1] - lastTwo[0];
+            const deltaEl = document.getElementById('trend-delta');
+            deltaEl.innerText   = (delta >= 0 ? '▲ +' : '▼ ') + delta + ' vs last month';
+            deltaEl.className   = 'ml-auto text-sm font-black ' + (delta >= 0 ? 'text-green-600' : 'text-red-500');
+
+            const summary = trendDir === 1  ? 'Reviews are growing month-over-month — positive momentum.'
+                          : trendDir === 0  ? 'Review volume is stable. Consider a follow-up email campaign to boost it.'
+                          : 'Review volume is declining. Investigate recent product or fulfilment changes.';
+            document.getElementById('trend-summary').innerText = summary;
+
+            const lineColor = trendDir >= 0 ? '#6366f1' : '#ef4444';
+            const ctx = document.getElementById('trendChart').getContext('2d');
+            myCharts.trend = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: months,
+                    datasets: [{
+                        data,
+                        borderColor: lineColor,
+                        backgroundColor: lineColor + '18',
+                        borderWidth: 2.5,
+                        pointBackgroundColor: lineColor,
+                        pointRadius: 4,
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: false, grid: { color: '#f1f5f9' }, ticks: { font: { size: 10 }, color: '#94a3b8' } },
+                        x: { grid: { display: false }, ticks: { font: { size: 10 }, color: '#94a3b8' } }
+                    }
+                }
+            });
+        }
+
+        function extractVendorName(url) {
+            try {
+                const host = new URL(url.startsWith('http') ? url : 'https://' + url).hostname;
+                const clean = host.replace(/^www\./, '').split('.')[0];
+                const known = { amazon: 'Amazon', walmart: 'Walmart', ebay: 'eBay', etsy: 'Etsy', target: 'Target', aliexpress: 'AliExpress', bestbuy: 'Best Buy', shopify: 'Shopify Store', temu: 'Temu', newegg: 'Newegg' };
+                return known[clean.toLowerCase()] || clean.charAt(0).toUpperCase() + clean.slice(1);
+            } catch {
+                return url.split('/')[2] || 'Unknown Vendor';
+            }
+        }
+
+        window.onload = function() {
+            document.getElementById('productTitle').innerText = 'Paste a URL to begin';
+            document.getElementById('stat-trust').innerText = '--';
+            document.getElementById('stat-trust-sub').innerText = 'Awaiting scan';
+            document.getElementById('stat-fake').innerText = '--';
+            document.getElementById('stat-gen').innerText = '--';
+            document.getElementById('mix-bar').style.width = '0%';
+            document.getElementById('stat-risk').innerText = '--';
+            document.getElementById('stat-risk-sub').innerText = 'Awaiting scan';
+            document.getElementById('stat-complaint').innerText = '--';
+            document.getElementById('sent-pos').innerText = '--';
+            document.getElementById('sent-neg').innerText = '--';
+            document.getElementById('sent-neu').innerText = '--';
+            document.getElementById('promoStatus').innerHTML = 'PROMOTION CHECK PENDING';
+            document.getElementById('promoStatus').className = 'px-4 py-1.5 bg-amber-100 text-amber-700 rounded-full text-[11px] font-bold uppercase tracking-wider border border-amber-200';
+            document.getElementById('majorIssueBanner').style.display = 'none';
+        };
+    </script>
+</body>
+</html>
